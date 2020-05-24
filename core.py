@@ -1,95 +1,111 @@
+import time
 import pygame
-import runpy
+import asyncio
+import executor
 
 FPS = 30
 
 
 class Car(pygame.sprite.Sprite):
-    def __init__(self, surface, position, speed, actions, *groups):
+    def __init__(self, surface, position, screen, *groups):
         super(Car, self).__init__(*groups)
+        self.screen = screen
         self.orig_image = surface
         self.image = self.orig_image
-        self.x, self.y = position
-        self.rect = self.image.get_rect(center=(self.x, self.y))
+        self.rect = self.image.get_rect(center=position)
         self.angle = 0
         self.direction = pygame.math.Vector2(0, -1)
         self.speed = 0
-        self.max_speed = speed
-        self.actions = actions
+        self.cell_width = max(self.rect.width, self.rect.height)
 
     def rotate(self, angle):
         self.angle = self.angle + angle
         self.image = pygame.transform.rotate(self.orig_image, -self.angle)
+        self.rect = self.image.get_rect(center=self.rect.center)
         self.direction = pygame.math.Vector2(0, -1).rotate(self.angle)
 
     def draw(self, screen):
-        screen.blit(self.image, (self.x, self.y))
+        screen.blit(self.image, self.rect.center)
+
+    def _next_move(self, speed):
+        move = self.rect.move((self.direction.x * speed, self.direction.y * speed))
+        return move
 
     def update(self):
-        self.x = self.x + self.direction.x * self.speed
-        self.y = self.y + self.direction.y * self.speed
-        self.rect = self.image.get_rect(center=(self.x, self.y))
+        move = self._next_move(self.speed)
+        if self.is_legal_move(move):
+            self.rect = move
 
-    def _start(self):
-        self.speed = self.max_speed
+    def is_legal_move(self, move):
+        screen = self.screen.get_rect()
+        new_screen = move.union(screen)
+        return new_screen == screen
 
-    def _stop(self):
-        self.speed = 0
+    def at_border(self):
+        move = self._next_move(self.cell_width / FPS)
+        return not self.is_legal_move(move)
 
     def go(self):
-        self.actions.extend([lambda: self._start(), lambda: self._stop()])
+        self.speed = self.cell_width/FPS
+        time.sleep(1/FPS)
+        self.speed = 0
+
+    def turn(self, angle):
+        frames = int(FPS*(abs(angle)/90.))
+        frames = frames or 1
+        delta = angle/frames
+        for i in range(frames):
+            self.rotate(delta)
+            time.sleep(1/FPS)
 
     def left(self):
-        self.actions.append(lambda: self.rotate(-90))
+        self.rotate(-90)
+        #self.turn(-90)
 
     def right(self):
-        self.actions.append(lambda: self.rotate(-90))
+        #self.turn(90)
+        self.rotate(90)
 
 
-def event_generator(car):
-    car.go()
-    car.left()
-    car.go()
+async def pygame_loop(screen, sprites):
+    running = True
+    current_time = 0
+    loop = asyncio.get_event_loop()
+    try:
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+
+            last_time, current_time = current_time, loop.time()
+            await asyncio.sleep(1/FPS - (current_time-last_time))
+
+            screen.fill((255, 255, 255))
+            sprites.update()
+            sprites.draw(screen)
+            pygame.display.flip()
+    finally:
+        loop.stop()
 
 
 def main():
+    loop = asyncio.get_event_loop()
+
     pygame.init()
-    clock = pygame.time.Clock()
     pygame.display.set_caption('Learn Python')
-
-    action_list = []
-
-    sprites = pygame.sprite.Group()
-    car = Car(pygame.image.load('data/car.png'), (16, 300), 64/FPS, action_list, sprites)
-    car.rotate(90)
-
-    runpy.run_module('executor', {'car': car})
-    # simport executor
-    #event_generator(car)
-
-    actions = iter(action_list)
-
     screen = pygame.display.set_mode((800, 600))
 
-    running = True
-    elapsed = 0
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-        pygame.display.update()
+    sprites = pygame.sprite.Group()
+    car = Car(pygame.image.load('data/car.png'), (33, 300), screen, sprites)
+    car.rotate(90)
 
-        elapsed = elapsed + clock.get_time()
-        if elapsed > 1000:
-            elapsed = 0
-            action = next(actions, None)
-            if action:
-                action()
-
-        sprites.update()
-        screen.fill((255, 255, 255))
-        sprites.draw(screen)
-        clock.tick(30)
+    asyncio.ensure_future(pygame_loop(screen, sprites))
+    loop.run_in_executor(None, executor.task, car)
+    try:
+        loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    pygame.quit()
 
 
 if __name__ == "__main__":
